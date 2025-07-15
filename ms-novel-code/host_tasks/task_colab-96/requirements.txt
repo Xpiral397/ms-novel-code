@@ -1,0 +1,2 @@
+sqlaclchemy==2.0.41
+bcrypt==4.3.0
