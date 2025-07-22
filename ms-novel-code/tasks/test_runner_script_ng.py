@@ -1,5 +1,3 @@
-
-
 #!/usr/bin/env python
 import argparse
 import importlib.util
@@ -9,7 +7,6 @@ import os
 import shutil
 import subprocess
 import sys
-import time
 import traceback
 import unittest
 from difflib import unified_diff
@@ -19,14 +16,14 @@ from pprint import pformat
 # === Start Standalone Helper Functions ===
 
 
-def create_environment_directories(root_directory: Path = Path("/tasks")):
+def create_environment_directories():
     """Create necessary environment directories for enroot compatibility."""
     # Create directories that might be needed by uv/pip when running in enroot
     env_dirs = [
-        f"{root_directory}/.tmp",         # TMPDIR for temporary files
-        f"{root_directory}/.uv_cache",    # UV_CACHE_DIR for uv cache
-        f"{root_directory}/.uv_data",     # UV_DATA_DIR for uv data
-        f"{root_directory}/.python_user", # PYTHONUSERBASE for user site packages
+        "/tasks/.tmp",         # TMPDIR for temporary files
+        "/tasks/.uv_cache",    # UV_CACHE_DIR for uv cache
+        "/tasks/.uv_data",     # UV_DATA_DIR for uv data
+        "/tasks/.python_user", # PYTHONUSERBASE for user site packages
     ]
 
     for dir_path in env_dirs:
@@ -156,11 +153,9 @@ class CustomTestResult(unittest.TestResult):
             "traceback": None,
             "stdout": "",
             "stderr": "",
-            "duration_ms": 0,  # Timing information in milliseconds
         }
         self.current_test_index += 1
         self.subtest_failures = []  # Reset subtest failures for each new test
-        self.test_start_time = time.perf_counter()  # Start timing for this test
 
     def addSuccess(self, test):
         super().addSuccess(test)
@@ -205,11 +200,6 @@ class CustomTestResult(unittest.TestResult):
 
     def stopTest(self, test):
         super().stopTest(test)
-
-        # Calculate test duration
-        if hasattr(self, 'test_start_time') and self.current_test_output:
-            duration = time.perf_counter() - self.test_start_time
-            self.current_test_output["duration_ms"] = duration * 1000  # Convert to milliseconds
 
         # If this test had subtests, we need to decide the overall result
         # and ensure it gets added to the results
@@ -311,14 +301,9 @@ class MultiRunAggregator:
                     "last_stdout": "",
                     "last_stderr": "",
                     "case_index": detail["case_index"],
-                    "durations": [],  # Track all durations for this test
                 }
 
             stats = self.test_stats[test_name]
-
-            # Track duration for this test run
-            if "duration_ms" in detail:
-                stats["durations"].append(detail["duration_ms"])
 
             if detail["passed"]:
                 stats["passes"] += 1
@@ -385,9 +370,6 @@ class MultiRunAggregator:
             pass_rate = stats["passes"] / total_runs if total_runs > 0 else 0.0
             is_flaky = 0 < stats["passes"] < total_runs
 
-            # Calculate average duration
-            avg_duration_ms = sum(stats["durations"]) / len(stats["durations"]) if stats["durations"] else 0
-
             detail = {
                 "case_index": stats["case_index"],
                 "test_name": test_name,
@@ -403,10 +385,6 @@ class MultiRunAggregator:
                 "runs_errored": stats["errors"],
                 "total_runs": total_runs,
                 "flaky": is_flaky,
-                # Timing information
-                "avg_duration_ms": avg_duration_ms,
-                "min_duration_ms": min(stats["durations"]) if stats["durations"] else 0,
-                "max_duration_ms": max(stats["durations"]) if stats["durations"] else 0,
             }
 
             result["details"].append(detail)
@@ -438,11 +416,11 @@ def has_dependencies(task_dir: Path) -> bool:
         return False
 
 
-def setup_virtual_environment(task_dir: Path, root_dir: Path = Path("/tasks")) -> bool:
+def setup_virtual_environment(task_dir: Path) -> bool:
     """Create a virtual environment and install dependencies using uv."""
 
     # Ensure environment directories exist (important for enroot)
-    create_environment_directories(root_dir)
+    create_environment_directories()
 
     try:
         # Create virtual environment
@@ -678,7 +656,6 @@ def run_tests(task_dir: Path):
 def run_multiple_tests(task_dir: Path, num_runs: int, json_output: bool = False):
     """Run tests multiple times and aggregate results."""
     aggregator = MultiRunAggregator()
-    iteration_durations = []
 
     # Store original sys.modules state to restore between runs
     original_modules = set(sys.modules.keys())
@@ -701,37 +678,15 @@ def run_multiple_tests(task_dir: Path, num_runs: int, json_output: bool = False)
                 if module_name in sys.modules:
                     del sys.modules[module_name]
 
-        # Timer for test iteration
-        start = time.perf_counter()
-
         # Run a single test iteration
         result = run_tests(task_dir)
-
-        duration = time.perf_counter() - start
-        iteration_durations.append(duration)
-
-        if duration < 1:
-            duration_color = Colors.GREEN
-        elif duration > 12:
-            duration_color = Colors.RED
-        else:
-            duration_color = Colors.YELLOW
-        print(
-            f"{duration_color}Time: {duration:.2f}s{Colors.RESET}"
-        )
-
         aggregator.add_run(result)
 
         # If there's a setup error, no point in continuing
         if result.get("setup_error"):
             break
 
-    aggregated_result = aggregator.get_aggregated_results()
-
-    # Add total time to the summary
-    aggregated_result["summary"]["total_duration_ms"] = sum(iteration_durations)
-
-    return aggregated_result
+    return aggregator.get_aggregated_results()
 
 
 # Function to print results in a human-friendly format
@@ -753,7 +708,6 @@ def print_human_readable_results(results, task_dir):
     failed_count = results["summary"]["failed"]
     error_count = results["summary"]["errors"]
     total_runs = results["summary"].get("total_runs", 1)
-    total_time = results["summary"].get("total_duration_ms", 0)
 
     print(
         f"\n{Colors.BOLD}Test Execution Summary (across {total_runs} runs):{Colors.RESET}"
@@ -768,29 +722,12 @@ def print_human_readable_results(results, task_dir):
             pass_rate = detail.get("pass_rate", 0.0) * 100
             runs_passed = detail.get("runs_passed", 0)
             is_flaky = detail.get("flaky", False)
-            avg_duration_ms = detail.get("avg_duration_ms", 0)
 
             print(f"Test {idx}/{total}: {test_name}")
             print(
                 f"  Pass Rate: {pass_rate:.1f}% ({runs_passed}/{total_runs} runs)",
                 end="",
             )
-
-            # Add timing information
-            if avg_duration_ms > 0:
-                if avg_duration_ms < 100:
-                    time_color = Colors.GREEN
-                elif avg_duration_ms < 1000:
-                    time_color = Colors.YELLOW
-                else:
-                    time_color = Colors.RED
-
-                if avg_duration_ms < 1000:
-                    time_str = f"{avg_duration_ms:.1f}ms"
-                else:
-                    time_str = f"{avg_duration_ms/1000:.2f}s"
-
-                print(f" | Avg: {time_color}{time_str}{Colors.RESET}", end="")
 
             if is_flaky:
                 print(f" {Colors.YELLOW}[FLAKY]{Colors.RESET}")
@@ -802,25 +739,7 @@ def print_human_readable_results(results, task_dir):
                 print()
         else:
             # Single run display
-            duration_ms = detail.get("duration_ms", 0)
             print(f"Test {idx}/{total} ({test_name}): ", end="")
-
-            # Add timing information for single run
-            if duration_ms > 0:
-                if duration_ms < 100:
-                    time_color = Colors.GREEN
-                elif duration_ms < 1000:
-                    time_color = Colors.YELLOW
-                else:
-                    time_color = Colors.RED
-
-                if duration_ms < 1000:
-                    time_str = f"{duration_ms:.1f}ms"
-                else:
-                    time_str = f"{duration_ms/1000:.2f}s"
-
-                print(f"({time_color}{time_str}{Colors.RESET}) ", end="")
-
             if detail["exception"]:
                 print(
                     f"{Colors.RED}ERROR{Colors.RESET}"
@@ -857,27 +776,8 @@ def print_human_readable_results(results, task_dir):
                     else f"{Colors.RED}FAIL{Colors.RESET}"
                 )
 
-            # Add timing information to detailed view
-            timing_info = ""
-            if total_runs > 1:
-                avg_duration_ms = detail.get("avg_duration_ms", 0)
-                min_duration_ms = detail.get("min_duration_ms", 0)
-                max_duration_ms = detail.get("max_duration_ms", 0)
-                if avg_duration_ms > 0:
-                    if avg_duration_ms < 1000:
-                        timing_info = f" | Avg: {avg_duration_ms:.1f}ms (min: {min_duration_ms:.1f}ms, max: {max_duration_ms:.1f}ms)"
-                    else:
-                        timing_info = f" | Avg: {avg_duration_ms/1000:.2f}s (min: {min_duration_ms/1000:.2f}s, max: {max_duration_ms/1000:.2f}s)"
-            else:
-                duration_ms = detail.get("duration_ms", 0)
-                if duration_ms > 0:
-                    if duration_ms < 1000:
-                        timing_info = f" | Duration: {duration_ms:.1f}ms"
-                    else:
-                        timing_info = f" | Duration: {duration_ms/1000:.2f}s"
-
             print(
-                f"\n{Colors.BOLD}Test Case {idx} ({test_name}): {status}{Colors.RESET}{timing_info}"
+                f"\n{Colors.BOLD}Test Case {idx} ({test_name}): {status}{Colors.RESET}"
             )
 
             if detail["exception"]:
@@ -903,17 +803,6 @@ def print_human_readable_results(results, task_dir):
     if total_runs > 1:
         print(f"Total Test Runs: {total_runs}")
         print(f"Total Test Cases: {total}")
-
-        if total_time < 10:
-            total_time_color = Colors.GREEN
-        elif total_time > 120:
-            total_time_color = Colors.RED
-        else:
-            total_time_color = Colors.YELLOW
-
-        print(
-            f"Total Time: {total_time_color}{total_time:.2f}s{Colors.RESET}"
-        )
         consistent_pass_rate = results["summary"].get("consistent_pass_rate", 0.0) * 100
 
         print(
@@ -1000,12 +889,6 @@ if __name__ == "__main__":
         type=str,
         help="Path to save JSON output when using --json (default: test_results.json in task dir)",
     )
-    parser.add_argument(
-        "--root-dir",
-        type=str,
-        default="/tasks",
-        help="Path to the root directory for environment directories (default: /tasks)",
-    )
 
     args = parser.parse_args()
 
@@ -1018,7 +901,6 @@ if __name__ == "__main__":
         sys.exit(1)
 
     task_directory = Path(args.task_dir).resolve()  # Resolve to absolute path
-    root_directory = Path(args.root_dir).resolve()
     # Determine output file path once (if using JSON output)
     output_file = None
     if args.json:
@@ -1049,7 +931,7 @@ if __name__ == "__main__":
 
             if True:  # Always setup since we always remove above
                 # Setup virtual environment and install dependencies
-                if not setup_virtual_environment(task_directory, root_directory):
+                if not setup_virtual_environment(task_directory):
                     # If setup failed, create error result and exit
                     error_result = {
                         "setup_error": "Failed to create virtual environment or install dependencies",
