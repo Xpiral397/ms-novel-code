@@ -1,6 +1,6 @@
 param (
     [string]$Notebook,
-    [int]$Runs = 10,
+    [int]$Runs = 1,
     [int]$Timeout = 120
 )
 

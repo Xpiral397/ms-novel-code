@@ -1,12 +1,10 @@
-
-
 use std::io::Cursor;
 
-use task_ws::solve_tsp;            
+use task_ws::solve_tsp;
 
 
 
-/// Helper: run the solver and capture its single‑line output.
+/// Helper: run the solver and capture its single-line output.
 
 fn run_ok(input: &str) -> String {
 
@@ -36,41 +34,65 @@ fn run_err(input: &str) {
 
 
 
-/* ---------- malformed‑input checks ---------- */
+/* ---------- malformed-input checks ---------- */
 
 
 
-#[test] fn invalid_n()                 { run_err("foo\n"); }
+#[test]
+
+fn invalid_n() {
+
+    run_err("foo\n");
+
+}
 
 
 
-#[test] fn bad_row_count()             { run_err(r#"3
+#[test]
+
+fn bad_row_count() {
+
+    run_err(r#"3
 
 0 1 2
 
 3 4 5
 
-"#); }
+"#);
+
+}
 
 
 
-#[test] fn bad_row_too_short()         { run_err(r#"2
+#[test]
+
+fn bad_row_too_short() {
+
+    run_err(r#"2
 
 0
 
 0 0
 
-"#); }
+"#);
+
+}
 
 
 
-#[test] fn bad_row_too_long()          { run_err(r#"2
+#[test]
+
+fn bad_row_too_long() {
+
+    run_err(r#"2
 
 0 1 2
 
 0 0
 
-"#); }
+"#);
+
+}
 
 
 
@@ -78,17 +100,27 @@ fn run_err(input: &str) {
 
 
 
-#[test] fn n_zero()                   { assert_eq!(run_ok("0\n"), "0"); }
+#[test]
+
+fn n_zero() {
+
+    assert_eq!(run_ok("0\n"), "0");
+
+}
 
 
 
-#[test] fn n_one()                    { assert_eq!(run_ok("1\n0\n"), "0"); }
+#[test]
+
+fn n_one() {
+
+    assert_eq!(run_ok("1\n0\n"), "0");
+
+}
 
 
 
 /* ---------- prompt examples ---------- */
-
-
 
 #[test]
 
@@ -126,6 +158,8 @@ fn example_three_city() {
 
 }
 
+
+
 /* ---------- edge cases & blind spots ---------- */
 
 
@@ -136,7 +170,7 @@ fn overflow_saturates() {
 
     let half = std::u32::MAX / 2;
 
-    let expect = (half * 2).to_string();              // 4 294 967 294
+    let expect = (half * 2).to_string(); // 4_294_967_294
 
     let inp = format!("2\n0 {}\n{} 0\n", half, half);
 
@@ -146,17 +180,21 @@ fn overflow_saturates() {
 
 
 
-
-
 #[test]
 
 fn simd_tail_handling() {
 
-    // N = 10, not a multiple of 8‑lane AVX2
+    // N = 10, not a multiple of 8-lane AVX2
 
     let mut inp = String::from("10\n");
 
-    for _ in 0..10 { inp.push_str(&"0 ".repeat(10)); inp.push('\n'); }
+    for _ in 0..10 {
+
+        inp.push_str(&"0 ".repeat(10));
+
+        inp.push('\n');
+
+    }
 
     assert_eq!(run_ok(&inp), "0");
 
@@ -172,7 +210,13 @@ fn simd_exact_lane() {
 
     let mut inp = String::from("8\n");
 
-    for _ in 0..8 { inp.push_str(&"0 ".repeat(8)); inp.push('\n'); }
+    for _ in 0..8 {
+
+        inp.push_str(&"0 ".repeat(8));
+
+        inp.push('\n');
+
+    }
 
     assert_eq!(run_ok(&inp), "0");
 
@@ -186,10 +230,14 @@ fn all_zero_n16() {
 
     let mut inp = String::from("16\n");
 
-    for _ in 0..16 { inp.push_str(&"0 ".repeat(16)); inp.push('\n'); }
+    for _ in 0..16 {
+
+        inp.push_str(&"0 ".repeat(16));
+
+        inp.push('\n');
+
+    }
 
     assert_eq!(run_ok(&inp), "0");
 
 }
-
-
