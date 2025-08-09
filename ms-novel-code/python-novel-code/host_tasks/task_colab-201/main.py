@@ -1,300 +1,217 @@
+"""This module implements a HashTable with collision resolution.
 
-# main.py
-import argparse
-import json
-import logging
-import signal
-import threading
-import time
-import traceback
-from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List
-
-import Pyro4
+using chaining or linear probing.
+"""
+from typing import Any
 
 
-# Exceptions
-class AuthenticationError(Exception):
-    """Raised when an invalid API key is presented."""
+class HashTable:
+    """HashTable DS with support for chaining and linear probing."""
 
+    def __init__(
+        self,
+        collision_resolution: str = 'chaining',
+        initial_capacity: int = 8,
+        load_factor_threshold: float = 0.75
+    ):
+        """Initialize the HashTable with specified parameters."""
+        if collision_resolution not in (
+            'chaining', 'linear_probing'
+                ):
+            raise ValueError(
+                "Collision resolution must be 'chaining' or 'linear_probing'"
+                )
 
-class ServiceError(Exception):
-    """Wraps remote or network errors with metadata."""
+        if not isinstance(initial_capacity, int) or initial_capacity <= 0:
+            raise ValueError("Initial capacity must be a positive integer")
 
-    def __init__(self, message: str, service: str, version: str,
-                 method: str, code: str, tb: str = ""):
-        super().__init__(message)
-        self.service = service
-        self.version = version
-        self.method = method
-        self.code = code
-        self.traceback = tb
+        if not (0 < load_factor_threshold < 1):
+            raise ValueError(
+                "Load factor threshold must be a float "
+                "between 0 and 1 (exclusive)"
+                )
 
+        self.collision_resolution = collision_resolution
+        self.initial_capacity = initial_capacity
+        self.capacity = initial_capacity
+        self.load_factor_threshold = load_factor_threshold
+        self.size = 0
+        self._deleted_sentinel = object()
+        self._deleted_count = 0
 
-# Services
-@Pyro4.expose
-class ArithmeticService:
-    """Remote arithmetic operations with API key auth."""
-
-    def __init__(self, api_key: str, logger: logging.Logger):
-        self._api_key = api_key
-        self._log = logger
-
-    def _auth(self, key: str):
-        if key != self._api_key:
-            self._log.warning("Auth failed for ArithmeticService")
-            raise AuthenticationError("Invalid API key.")
-        self._log.info("Auth success for ArithmeticService")
-
-    def add(self, a: float, b: float, api_key: str) -> float:
-        self._auth(api_key)
-        self._log.info(f"add({a}, {b})")
-        return a + b
-
-    def subtract(self, a: float, b: float, api_key: str) -> float:
-        self._auth(api_key)
-        self._log.info(f"subtract({a}, {b})")
-        return a - b
-
-    def multiply(self, a: float, b: float, api_key: str) -> float:
-        self._auth(api_key)
-        self._log.info(f"multiply({a}, {b})")
-        return a * b
-
-    def divide(self, a: float, b: float, api_key: str) -> float:
-        self._auth(api_key)
-        self._log.info(f"divide({a}, {b})")
-        if b == 0:
-            self._log.error("Division by zero")
-            raise ZeroDivisionError("Division by zero.")
-        return a / b
-
-
-@Pyro4.expose
-class StatsService:
-    """Remote metrics aggregation with API key auth."""
-
-    def __init__(self, api_key: str, logger: logging.Logger):
-        self._api_key = api_key
-        self._log = logger
-        self._calls: List[tuple] = []
-
-    def _auth(self, key: str):
-        if key != self._api_key:
-            self._log.warning("Auth failed for StatsService")
-            raise AuthenticationError("Invalid API key.")
-        self._log.info("Auth success for StatsService")
-
-    def record_call(self, service: str, version: str, method: str,
-                    duration_ms: float, api_key: str) -> None:
-        self._auth(api_key)
-        self._log.info(f"record_call {service} {version} {method} {duration_ms}")
-        self._calls.append((service, version, method, duration_ms))
-
-
-# Server and Proxy share config
-class ConfigHolder:
-    """Holds dynamic config and allows reload on SIGHUP."""
-
-    def __init__(self, path: str):
-        self._path = path
-        self._lock = threading.RLock()
-        self._data: Dict[str, Any] = {}
-        self.reload()
-
-    def get(self) -> Dict[str, Any]:
-        with self._lock:
-            return self._data.copy()
-
-    def reload(self, *args):
-        with self._lock:
-            with open(self._path) as f:
-                self._data = json.load(f)
-            logging.getLogger().info("Config reloaded")
-
-
-class ServiceRegistry:
-    """Manages service registration and heartbeat."""
-
-    def __init__(self, config: ConfigHolder):
-        self.config = config
-        self._daemon = Pyro4.Daemon()
-        self._ns_lock = threading.Lock()
-        self._registered: List[tuple] = []
-        self._setup_logging()
-        self._register_all()
-        signal.signal(signal.SIGHUP, self._on_reload)
-        threading.Thread(target=self._heartbeat, daemon=True).start()
-        self._daemon.requestLoop()
-
-    def _setup_logging(self):
-        cfg = self.config.get()["logging"]
-        log = logging.getLogger("SOA")
-        handler = logging.handlers.RotatingFileHandler(
-            cfg["path"] + "soa.log",
-            maxBytes=cfg["rotate_every_mb"] * 1_048_576,
-            backupCount=5
-        )
-        fmt = "%(asctime)s %(levelname)s %(message)s"
-        handler.setFormatter(logging.Formatter(fmt))
-        log.addHandler(handler)
-        log.setLevel(getattr(logging, cfg["level"].upper(), logging.INFO))
-        self._log = log
-
-    def _locate_ns(self):
-        cfg = self.config.get()
-        for addr in cfg["name_servers"]:
-            host, port = addr.split(":")
-            try:
-                return Pyro4.locateNS(host=host, port=int(port))
-            except Pyro4.errors.PyroError:
-                self._log.warning(f"Name server at {addr} down")
-        return None
-
-    def _register(self, name: str, obj: Any):
-        uri = self._daemon.register(obj)
-        ns = self._locate_ns()
-        if ns:
-            ns.register(name, uri)
-            self._registered.append((name, obj))
-            self._log.info(f"Registered {name}")
+        if self.collision_resolution == 'chaining':
+            self._table = [[] for _ in range(self.capacity)]
         else:
-            self._log.error("No name server; cannot register")
+            self._table = [None] * self.capacity
 
-    def _register_all(self):
-        cfg = self.config.get()
-        api = cfg["auth"]["api_key"]
-        self._register("arithmetic.service.v1_0",
-                       ArithmeticService(api, self._log))
-        self._register("arithmetic.service.v2_0",
-                       ArithmeticService(api, self._log))
-        self._register("stats.service.v1_0",
-                       StatsService(api, self._log))
+    def put(self, key: str, value: Any) -> None:
+        """Insert a key-value pair into the hash table."""
+        if not isinstance(key, str) or not key:
+            raise TypeError("Key must be a non-empty string")
 
-    def _heartbeat(self):
-        while True:
-            time.sleep(30)
-            self._log.info("Heartbeat re-registering services")
-            ns = self._locate_ns()
-            if ns:
-                for name, obj in self._registered:
-                    uri = self._daemon.register(obj)
-                    ns.register(name, uri)
-
-    def _on_reload(self, signum, frame):
-        self._log.info("SIGHUP received: reloading config and re-registering")
-        self.config.reload()
-        self._register_all()
-
-
-class ServiceProxy:
-    """Client proxy with retry, fallback, timeout, metrics & error wrapping."""
-
-    def __init__(self, config: Dict[str, Any]):
-        self._cfg = config
-        self._api = config["auth"]["api_key"]
-        self._retries = config["client"]["retry_count"]
-        self._timeout = config["client"]["timeout_seconds"]
-        self._backoff = config["client"]["backoff_factor"]
-        self._executor = ThreadPoolExecutor(max_workers=2)
-        self._setup_logging()
-
-    def _setup_logging(self):
-        cfg = self._cfg["logging"]
-        log = logging.getLogger("ServiceProxy")
-        handler = logging.handlers.RotatingFileHandler(
-            cfg["path"] + "proxy.log",
-            maxBytes=cfg["rotate_every_mb"] * 1_048_576,
-            backupCount=5
-        )
-        fmt = "%(asctime)s %(levelname)s %(message)s"
-        handler.setFormatter(logging.Formatter(fmt))
-        log.addHandler(handler)
-        log.setLevel(getattr(logging, cfg["level"].upper(), logging.INFO))
-        self._log = log
-
-    def _locate_ns(self):
-        for addr in self._cfg["name_servers"]:
-            host, port = addr.split(":")
-            try:
-                return Pyro4.locateNS(host=host, port=int(port))
-            except Pyro4.errors.PyroError:
-                self._log.warning(f"Name server {addr} down")
-        return None
-
-    def _get_proxy(self, service: str, version: str):
-        key = f"{service}.service.v{version.replace('.', '_')}"
-        ns = self._locate_ns()
-        if ns:
-            uri = ns.lookup(key)
+        if self.collision_resolution == 'chaining':
+            self._put_chaining(key, value)
         else:
-            uri = self._cfg["services"][service]["direct_uris"][version][0]
-            self._log.info(f"Using direct URI for {key}")
-        proxy = Pyro4.Proxy(uri)
-        proxy._pyroTimeout = self._timeout
-        return proxy
+            self._put_linear_probing(key, value)
 
-    def call(self, service: str, version: str, method: str,
-             args: List[Any], kwargs: Dict[str, Any] = None) -> Dict[str, Any]:
-        kwargs = kwargs.copy() if kwargs else {}
-        kwargs["api_key"] = self._api
-        attempt = 0
-        while attempt <= self._retries:
-            try:
-                p = self._get_proxy(service, version)
-                start = time.time()
-                res = getattr(p, method)(*args, **kwargs)
-                duration = (time.time() - start) * 1000
-                self._executor.submit(self._send_metric,
-                                      service, version, method, duration)
-                return {"result": res, "service": service,
-                        "version": version, "duration_ms": duration}
-            except (ZeroDivisionError, Pyro4.errors.PyroError) as e:
-                if attempt == self._retries:
-                    tb = traceback.format_exc()
-                    code = e.__class__.__name__
-                    raise ServiceError(str(e), service, version,
-                                       method, code, tb) from e
-                back = self._backoff * (2 ** attempt)
-                self._log.info(f"Retry {attempt} after {back}s")
-                time.sleep(back)
-                attempt += 1
+        # Calculate current load factor
+        cl = self.size / self.capacity
+        current_load = (self.size + self._deleted_count) / self.capacity if \
+            self.collision_resolution == 'linear_probing' else cl
 
-    def _send_metric(self, service, version, method, duration):
-        try:
-            p = self._get_proxy("stats", "1_0")
-            p.record_call(service, version, method, duration, self._api)
-        except Exception as e:
-            self._log.warning(f"Metrics failed: {e}")
+        if current_load > self.load_factor_threshold:
+            self._resize()
 
+    def get(self, key: str) -> Any:
+        """Retrieve a value by its key from the hash table."""
+        if not isinstance(key, str) or not key:
+            raise TypeError("Key must be a non-empty string")
 
-# Entry points
-def run_server(config_path: str):
-    cfg = ConfigHolder(config_path)
-    ServiceRegistry(cfg)
+        if self.collision_resolution == 'chaining':
+            return self._get_chaining(key)
+        return self._get_linear_probing(key)
 
+    def remove(self, key: str) -> None:
+        """Remove a key-value pair from the hash table."""
+        if not isinstance(key, str) or not key:
+            raise TypeError("Key must be a non-empty string")
 
-def run_client(config_path: str):
-    with open(config_path) as f:
-        cfg = json.load(f)
-    proxy = ServiceProxy(cfg)
-    # Example calls
-    print(proxy.call("arithmetic", "1_0", "add", [5, 7]))
-    try:
-        proxy.call("arithmetic", "1_0", "divide", [5, 0])
-    except ServiceError as e:
-        print("Caught:", e)
+        if self.collision_resolution == 'chaining':
+            self._remove_chaining(key)
+        else:
+            self._remove_linear_probing(key)
 
+    def _hash(self, key: str) -> int:
+        """Compute the hash index for a given key."""
+        return hash(key) % self.capacity
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="config.json")
-    parser.add_argument("--mode", choices=("server", "client"), required=True)
-    args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO)
-    if args.mode == "server":
-        run_server(args.config)
-    else:
-        run_client(args.config)
+    def _put_chaining(self, key: str, value: Any) -> None:
+        """Insert a key-value pair using chaining."""
+        index = self._hash(key)
+        bucket = self._table[index]
 
+        for existing_key, _ in bucket:
+            if existing_key == key:
+                raise KeyError(f"Key '{key}' already exists")
+
+        bucket.append((key, value))
+        self.size += 1
+
+    def _get_chaining(self, key: str) -> Any:
+        """Retrieve a value using chaining."""
+        index = self._hash(key)
+        bucket = self._table[index]
+
+        for existing_key, val in bucket:
+            if existing_key == key:
+                return val
+        raise KeyError(f"Key '{key}' not found")
+
+    def _remove_chaining(self, key: str) -> None:
+        """Remove a key-value pair using chaining."""
+        index = self._hash(key)
+        bucket = self._table[index]
+
+        for i, (existing_key, _) in enumerate(bucket):
+            if existing_key == key:
+                del bucket[i]
+                self.size -= 1
+                return
+        raise KeyError(f"Key '{key}' not found")
+
+    def _put_linear_probing(self, key: str, value: Any) -> None:
+        """Insert a key-value pair using linear probing."""
+        index = self._hash(key)
+        first_deleted = None
+
+        for _ in range(self.capacity):
+            entry = self._table[index]
+
+            if entry is None:
+                if first_deleted is not None:
+                    self._table[first_deleted] = (key, value)
+                    self._deleted_count -= 1
+                else:
+                    self._table[index] = (key, value)
+                self.size += 1
+                return
+            elif entry is self._deleted_sentinel:
+                if first_deleted is None:
+                    first_deleted = index
+                index = (index + 1) % self.capacity
+            else:
+                existing_key, _ = entry
+                if existing_key == key:
+                    raise KeyError(f"Key '{key}' already exists")
+                index = (index + 1) % self.capacity
+
+        if first_deleted is not None:
+            self._table[first_deleted] = (key, value)
+            self._deleted_count -= 1
+            self.size += 1
+            return
+
+        raise RuntimeError("Hash table is full")
+
+    def _get_linear_probing(self, key: str) -> Any:
+        """Retrieve a value using linear probing."""
+        index = self._hash(key)
+
+        for _ in range(self.capacity):
+            entry = self._table[index]
+            if entry is None:
+                break
+            elif entry is not self._deleted_sentinel:
+                existing_key, val = entry
+                if existing_key == key:
+                    return val
+            index = (index + 1) % self.capacity
+
+        raise KeyError(f"Key '{key}' not found")
+
+    def _remove_linear_probing(self, key: str) -> None:
+        """Remove a key-value pair using linear probing."""
+        index = self._hash(key)
+
+        for _ in range(self.capacity):
+            entry = self._table[index]
+            if entry is None:
+                break
+            elif entry is not self._deleted_sentinel:
+                existing_key, _ = entry
+                if existing_key == key:
+                    self._table[index] = self._deleted_sentinel
+                    self.size -= 1
+                    self._deleted_count += 1
+                    return
+            index = (index + 1) % self.capacity
+
+        raise KeyError(f"Key '{key}' not found")
+
+    def _resize(self) -> None:
+        """Resize the hashtable when the load factor threshold is exceeded."""
+        new_capacity = self.capacity * 2
+        old_table = self._table
+
+        if self.collision_resolution == 'chaining':
+            self._table = [[] for _ in range(new_capacity)]
+        else:
+            self._table = [None] * new_capacity
+            self._deleted_count = 0
+
+        old_size = self.size
+        self.size = 0
+        self.capacity = new_capacity
+
+        if self.collision_resolution == 'chaining':
+            for bucket in old_table:
+                for key, value in bucket:
+                    self._put_chaining(key, value)
+        else:
+            for entry in old_table:
+                if entry is not None and entry is not self._deleted_sentinel:
+                    key, value = entry
+                    self._put_linear_probing(key, value)
+
+        self.size = old_size
 

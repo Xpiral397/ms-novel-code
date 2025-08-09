@@ -1,189 +1,227 @@
-# test.py
-
+# tests
+"""Test suite for the HashTable class."""
 import unittest
-import threading
-import time
-import json
-import os
-import logging
-from unittest.mock import patch
-
-import Pyro4
-
-from main import (
-    AuthenticationError,
-    ServiceError,
-    ArithmeticService,
-    StatsService,
-    ConfigHolder,
-    ServiceProxy,
-    ServiceRegistry,
-)
+from main import HashTable
 
 
-class TestServicesLocal(unittest.TestCase):
-    """Test ArithmeticService and StatsService logic and authentication."""
+class TestHashTable(unittest.TestCase):
+    """Unit tests for HashTable."""
 
     def setUp(self):
-        logger = logging.getLogger("test")
-        logger.addHandler(logging.NullHandler())
-        self.api_key = "secret"
-        self.arith = ArithmeticService(self.api_key, logger)
-        self.stats = StatsService(self.api_key, logger)
+        """Prepare hash tables for tests."""
+        self.chaining_ht = HashTable(
+            collision_resolution="chaining"
+        )
+        self.linear_ht = HashTable(
+            collision_resolution="linear_probing"
+        )
 
-    def test_arithmetic_operations(self):
-        self.assertEqual(self.arith.add(1, 2, self.api_key), 3)
-        self.assertEqual(self.arith.subtract(5, 2, self.api_key), 3)
-        self.assertEqual(self.arith.multiply(3, 4, self.api_key), 12)
-        self.assertEqual(self.arith.divide(8, 2, self.api_key), 4.0)
+    def test_initialization_default(self):
+        """Test default initialization."""
+        ht = HashTable()
+        self.assertEqual(ht.collision_resolution, "chaining")
+        self.assertEqual(ht.capacity, 8)
+        self.assertEqual(ht.load_factor_threshold, 0.75)
 
-    def test_divide_by_zero(self):
-        with self.assertRaises(ZeroDivisionError):
-            self.arith.divide(1, 0, self.api_key)
+    def test_initialization_custom(self):
+        """Test custom initialization."""
+        ht = HashTable(
+            collision_resolution="linear_probing",
+            initial_capacity=16,
+            load_factor_threshold=0.6
+        )
+        self.assertEqual(ht.collision_resolution, "linear_probing")
+        self.assertEqual(ht.capacity, 16)
+        self.assertEqual(ht.load_factor_threshold, 0.6)
 
-    def test_arithmetic_authentication(self):
-        with self.assertRaises(AuthenticationError):
-            self.arith.add(1, 2, "bad_key")
+    def test_invalid_collision_resolution(self):
+        """Test invalid collision resolution."""
+        with self.assertRaises(ValueError) as context:
+            HashTable(collision_resolution="invalid_method")
+        self.assertEqual(
+            str(context.exception),
+            "Collision resolution must be 'chaining' or 'linear_probing'"
+        )
 
-    def test_stats_record_and_auth(self):
-        self.stats.record_call("svc", "v1", "m", 12.3, self.api_key)
-        self.assertEqual(self.stats._calls, [("svc", "v1", "m", 12.3)])
-        with self.assertRaises(AuthenticationError):
-            self.stats.record_call("svc", "v1", "m", 5.5, "bad_key")
+    def test_invalid_initial_capacity(self):
+        """Test invalid initial capacity."""
+        with self.assertRaises(ValueError) as context:
+            HashTable(initial_capacity=0)
+        self.assertEqual(
+            str(context.exception),
+            "Initial capacity must be a positive integer"
+        )
 
+    def test_invalid_load_factor_threshold(self):
+        """Test invalid load factor threshold."""
+        with self.assertRaises(ValueError) as context:
+            HashTable(load_factor_threshold=1.5)
+        self.assertEqual(
+            str(context.exception),
+            "Load factor threshold must be a float "
+            "between 0 and 1 (exclusive)"
+        )
 
-class TestServiceProxyIntegration(unittest.TestCase):
-    """Integration tests for ServiceProxy under various scenarios."""
+    def test_put_and_get_chaining(self):
+        """Test put and get with chaining."""
+        self.chaining_ht.put("apple", 10)
+        self.assertEqual(self.chaining_ht.get("apple"), 10)
 
-    @classmethod
-    def setUpClass(cls):
-        # Start a Pyro daemon and register services
-        cls.daemon = Pyro4.Daemon()
-        logger = logging.getLogger("test")
-        logger.addHandler(logging.NullHandler())
-        cls.api_key = "secret"
+    def test_put_and_get_linear_probing(self):
+        """Test put and get with linear probing."""
+        self.linear_ht.put("banana", 20)
+        self.assertEqual(self.linear_ht.get("banana"), 20)
 
-        svc = ArithmeticService(cls.api_key, logger)
-        stats = StatsService(cls.api_key, logger)
-        cls.uri_svc = cls.daemon.register(svc)
-        cls.uri_stats = cls.daemon.register(stats)
+    def test_put_duplicate_key(self):
+        """Test put with duplicate key."""
+        self.chaining_ht.put("apple", 10)
+        with self.assertRaises(KeyError) as context:
+            self.chaining_ht.put("apple", 20)
+        self.assertTrue(
+            "Key 'apple' already exists" in str(context.exception)
+        )
 
-        # Run daemon loop in background
-        cls.thread = threading.Thread(target=cls.daemon.requestLoop, daemon=True)
-        cls.thread.start()
+    def test_put_invalid_key(self):
+        """Test put with invalid key."""
+        with self.assertRaises(TypeError) as context:
+            self.chaining_ht.put(123, "value")
+        self.assertEqual(
+            str(context.exception),
+            "Key must be a non-empty string"
+        )
 
-        # Prepare config.json for reload & registry tests
-        cls.config = {
-            "name_servers": ["localhost:9999"],  # unreachable
-            "services": {
-                "arithmetic": {"direct_uris": {"v1_0": [str(cls.uri_svc)]}},
-                "stats": {"direct_uris": {"1_0": [str(cls.uri_stats)]}}
-            },
-            "auth": {"api_key": cls.api_key},
-            "client": {
-                "retry_count": 1,
-                "timeout_seconds": 0.5,
-                "backoff_factor": 0.1
-            },
-            "logging": {"path": ".", "level": "DEBUG", "rotate_every_mb": 1}
-        }
-        with open("config.json", "w") as f:
-            json.dump(cls.config, f)
+    def test_get_nonexistent_key(self):
+        """Test get with nonexistent key."""
+        with self.assertRaises(KeyError) as context:
+            self.chaining_ht.get("nonexistent")
+        self.assertTrue(
+            "Key 'nonexistent' not found" in str(context.exception)
+        )
 
-        cls.proxy = ServiceProxy(cls.config)
-        cls.stats_instance = stats
+    def test_remove_key_chaining(self):
+        """Test remove key with chaining."""
+        self.chaining_ht.put("apple", 10)
+        self.chaining_ht.remove("apple")
+        with self.assertRaises(KeyError):
+            self.chaining_ht.get("apple")
 
-    @classmethod
-    def tearDownClass(cls):
-        cls.daemon.shutdown()
-        cls.thread.join()
-        os.remove("config.json")
+    def test_remove_key_linear_probing(self):
+        """Test remove key with linear probing."""
+        self.linear_ht.put("banana", 20)
+        self.linear_ht.remove("banana")
+        with self.assertRaises(KeyError):
+            self.linear_ht.get("banana")
 
-    def setUp(self):
-        # Ensure instance attributes
-        self.config = self.__class__.config
-        self.proxy = self.__class__.proxy
-        self.stats = self.__class__.stats_instance
+    def test_remove_nonexistent_key(self):
+        """Test remove nonexistent key."""
+        with self.assertRaises(KeyError) as context:
+            self.chaining_ht.remove("nonexistent")
+        self.assertTrue(
+            "Key 'nonexistent' not found" in str(context.exception)
+        )
 
-    def test_normal_call(self):
-        resp = self.proxy.call("arithmetic", "v1_0", "add", [2, 3])
-        self.assertEqual(resp["result"], 5)
+    def test_resize_chaining(self):
+        """Test resizing with chaining."""
+        ht = HashTable(
+            collision_resolution="chaining",
+            initial_capacity=4,
+            load_factor_threshold=0.6
+        )
+        ht.put("a", 1)
+        ht.put("b", 2)
+        ht.put("c", 3)
+        self.assertGreater(ht.capacity, 4)
 
-    def test_divide_by_zero(self):
-        with self.assertRaises(ServiceError) as cm:
-            self.proxy.call("arithmetic", "v1_0", "divide", [5, 0])
-        self.assertEqual(cm.exception.code, "ZeroDivisionError")
+    def test_resize_linear_probing(self):
+        """Test resizing with linear probing."""
+        ht = HashTable(
+            collision_resolution="linear_probing",
+            initial_capacity=4,
+            load_factor_threshold=0.6
+        )
+        ht.put("a", 1)
+        ht.put("b", 2)
+        ht.put("c", 3)
+        self.assertGreater(ht.capacity, 4)
 
-    def test_auth_failure_wrapped(self):
-        bad_cfg = dict(self.config)
-        bad_cfg["auth"] = {"api_key": "wrong"}
-        proxy_bad = ServiceProxy(bad_cfg)
-        with self.assertRaises(ServiceError) as cm:
-            proxy_bad.call("arithmetic", "v1_0", "add", [1, 2])
-        self.assertEqual(cm.exception.code, "AuthenticationError")
+    def test_collision_chaining(self):
+        """Test collision handling with chaining."""
+        ht = HashTable(
+            collision_resolution="chaining",
+            initial_capacity=1
+        )
+        ht.put("a", 1)
+        ht.put("b", 2)
+        self.assertEqual(ht.get("a"), 1)
+        self.assertEqual(ht.get("b"), 2)
 
-    def test_metrics_reporting(self):
-        self.stats._calls.clear()
-        self.proxy.call("arithmetic", "v1_0", "subtract", [9, 4])
-        time.sleep(0.2)
-        calls = self.stats._calls
-        self.assertTrue(any(c[2] == "subtract" for c in calls))
+    def test_collision_linear_probing(self):
+        """Test collision handling with linear probing."""
+        ht = HashTable(
+            collision_resolution="linear_probing",
+            initial_capacity=2
+        )
+        ht.put("a", 1)
+        ht.put("b", 2)
+        ht.put("c", 3)
+        self.assertEqual(ht.get("a"), 1)
+        self.assertEqual(ht.get("b"), 2)
+        self.assertEqual(ht.get("c"), 3)
 
-    def test_retry_and_backoff(self):
-        bad_cfg = dict(self.config)
-        bad_cfg["services"] = {
-            "arithmetic": {"direct_uris": {"v1_0": ["PYRO:nonexistent@none"]}}
-        }
-        proxy_bad = ServiceProxy(bad_cfg)
-        with self.assertRaises(ServiceError) as cm:
-            proxy_bad.call("arithmetic", "v1_0", "add", [1, 2])
-        self.assertEqual(cm.exception.code, "PyroError")
+    def test_rehashing_chaining(self):
+        """Test rehashing after resize with chaining."""
+        ht = HashTable(
+            collision_resolution="chaining",
+            initial_capacity=2
+        )
+        ht.put("a", 1)
+        ht.put("b", 2)
+        ht.put("c", 3)
+        self.assertEqual(ht.get("a"), 1)
+        self.assertEqual(ht.get("b"), 2)
+        self.assertEqual(ht.get("c"), 3)
 
-    def test_name_server_fallback(self):
-        calls = {"count": 0}
+    def test_rehashing_linear_probing(self):
+        """Test rehashing after resize with linear probing."""
+        ht = HashTable(
+            collision_resolution="linear_probing",
+            initial_capacity=2
+        )
+        ht.put("a", 1)
+        ht.put("b", 2)
+        ht.put("c", 3)
+        self.assertEqual(ht.get("a"), 1)
+        self.assertEqual(ht.get("b"), 2)
+        self.assertEqual(ht.get("c"), 3)
 
-        def fake_locate(host=None, port=None):
-            calls["count"] += 1
-            if calls["count"] == 1:
-                raise Pyro4.errors.PyroError()
-            return None  # force direct URI next
+    def test_empty_key(self):
+        """Test put with empty key."""
+        with self.assertRaises(TypeError) as context:
+            self.chaining_ht.put("", "value")
+        self.assertEqual(
+            str(context.exception),
+            "Key must be a non-empty string"
+        )
 
-        with patch.object(Pyro4, "locateNS", side_effect=fake_locate):
-            resp = self.proxy.call("arithmetic", "v1_0", "add", [4, 3])
-            self.assertEqual(resp["result"], 7)
+    def test_reinsert_after_deletion_linear_probing(self):
+        """Test reinsert after deletion with linear probing."""
+        ht = HashTable(
+            collision_resolution="linear_probing"
+        )
+        ht.put("apple", 10)
+        ht.remove("apple")
+        ht.put("apple", 20)
+        self.assertEqual(ht.get("apple"), 20)
 
-    def test_config_reload(self):
-        holder = ConfigHolder("config.json")
-        old = holder.get()
-        new = old.copy()
-        new["auth"]["api_key"] = "newkey"
-        with open("config.json", "w") as f:
-            json.dump(new, f)
-        holder.reload()
-        updated = holder.get()
-        self.assertEqual(updated["auth"]["api_key"], "newkey")
-
-    def test_heartbeat_re_registration(self):
-        # Patch Daemon.requestLoop so ServiceRegistry.__init__ returns immediately
-        original_loop = Pyro4.Daemon.requestLoop
-        Pyro4.Daemon.requestLoop = lambda self: None
-        try:
-            holder = ConfigHolder("config.json")
-            reg = ServiceRegistry(holder)
-        finally:
-            Pyro4.Daemon.requestLoop = original_loop
-
-        history = []
-
-        class FakeNS:
-            def register(self, name, uri):
-                history.append(name)
-
-        reg._locate_ns = lambda: FakeNS()
-        reg._heartbeat()
-        self.assertIn("arithmetic.service.v1_0", history)
-        self.assertIn("stats.service.v1_0", history)
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_load_factor_calculation_with_deletions(self):
+        """Test load factor calculation with deletions."""
+        ht = HashTable(
+            collision_resolution="linear_probing",
+            initial_capacity=4,
+            load_factor_threshold=0.6
+        )
+        ht.put("a", 1)
+        ht.put("b", 2)
+        ht.remove("a")
+        ht.put("c", 3)
+        self.assertGreater(ht.capacity, 4)
